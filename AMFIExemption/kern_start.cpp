@@ -32,6 +32,7 @@ static KernelPatcher::KextInfo kextAMFIExtension[] = {
 };
 
 static mach_vm_address_t orgDeriveCSFlags {};
+static mach_vm_address_t orgProcessEntitlements {};
 
 extern OSArray *exemptionsList;
 
@@ -71,7 +72,7 @@ static bool matchExemptions(OSString *entitlement) {
     return false;
 }
 
-static uint32_t patchedDeriveCSFlags(OSDictionary *entitlements, bool *restricted, bool *restrictedBypass) {
+static void applyExemptions(OSDictionary *entitlements) {
     if (entitlements == NULL) {
         SYSLOG(MODULE_SHORT, "NULL entitlement list");
     } else {
@@ -95,18 +96,30 @@ static uint32_t patchedDeriveCSFlags(OSDictionary *entitlements, bool *restricte
             copy->release(); // release copy
         }
     }
+}
+
+// OSX 10.14
+static uint32_t patchedDeriveCSFlags(OSDictionary *entitlements, bool *restricted, bool *restrictedBypass) {
+    applyExemptions(entitlements);
     return FunctionCast(patchedDeriveCSFlags, orgDeriveCSFlags)(entitlements, restricted, restrictedBypass);
+}
+
+// OSX 10.15
+static bool patchedProcessEntitlements(OSDictionary *entitlements, uint32_t *flags, bool *restricted, bool *restrictedBypass, void *path, char **err, size_t *err_len) {
+    applyExemptions(entitlements);
+    return FunctionCast(patchedProcessEntitlements, orgProcessEntitlements)(entitlements, flags, restricted, restrictedBypass, path, err, err_len);
 }
 
 static KernelPatcher::RouteRequest requests[] {
     KernelPatcher::RouteRequest("__Z28deriveCSFlagsForEntitlementsP12OSDictionaryPbS1_", patchedDeriveCSFlags, orgDeriveCSFlags),
+    KernelPatcher::RouteRequest("__Z19processEntitlementsP12OSDictionaryPjPbS2_P8LazyPathPPcPm", patchedProcessEntitlements, orgProcessEntitlements),
 };
 
 static void processKext(void *user, KernelPatcher &patcher, size_t index, mach_vm_address_t address, size_t size) {
     DBGLOG(MODULE_SHORT, "processing AMFIExemption patches");
     for (size_t i = 0; i < arrsize(kextAMFIExtension); i++) {
         if (kextAMFIExtension[i].loadIndex == index) {
-            if (patcher.routeMultiple(index, requests, address, size)) {
+            if (patcher.routeMultiple(index, requests, address, size, true, true)) {
                 DBGLOG(MODULE_SHORT, "patched deriveCSFlagsForEntitlements");
             } else {
                 SYSLOG(MODULE_SHORT, "failed to find deriveCSFlagsForEntitlements in loaded kext: %d", patcher.getError());
