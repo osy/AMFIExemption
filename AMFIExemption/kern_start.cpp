@@ -21,23 +21,14 @@
 
 #define MODULE_SHORT "amfiex"
 
-// Paths
-
-static const char *pathAMFIExtension[] { "/System/Library/Extensions/AppleMobileFileIntegrity.kext/Contents/MacOS/AppleMobileFileIntegrity" };
-
 // All patches for binaries
 
-static KernelPatcher::KextInfo kextAMFIExtension[] = {
-    { "com.apple.driver.AppleMobileFileIntegrity", pathAMFIExtension, arrsize(pathAMFIExtension), {true}, {}, KernelPatcher::KextInfo::Unloaded },
-};
-
-static mach_vm_address_t orgDeriveCSFlags {};
-static mach_vm_address_t orgProcessEntitlements {};
+static mach_vm_address_t origDictionarySet {};
 
 extern OSArray *exemptionsList;
 
 static bool matchExemption(OSString *exemption, OSString *entitlement) {
-    size_t prefix_len = exemption->getLength()-1;
+    int prefix_len = exemption->getLength()-1;
     if (exemption->getChar(prefix_len) == '*') { // prefix matching
         if (entitlement->getLength() >= prefix_len) {
             if (strncmp(exemption->getCStringNoCopy(), entitlement->getCStringNoCopy(), prefix_len) == 0) {
@@ -59,7 +50,7 @@ static bool matchExemptions(OSString *entitlement) {
         DBGLOG(MODULE_SHORT, "exemptions list not loaded, no exemptions found");
         return false;
     }
-    for (size_t i = 0; i < exemptionsList->getCount(); i++) {
+    for (int i = 0; i < exemptionsList->getCount(); i++) {
         OSString *exemption = OSDynamicCast(OSString, exemptionsList->getObject(i));
         if (!exemption) {
             DBGLOG(MODULE_SHORT, "invalid exemption not a string at index %u", i);
@@ -98,41 +89,31 @@ static void applyExemptions(OSDictionary *entitlements) {
     }
 }
 
-// OSX 10.14
-static uint32_t patchedDeriveCSFlags(OSDictionary *entitlements, bool *restricted, bool *restrictedBypass) {
-    applyExemptions(entitlements);
-    return FunctionCast(patchedDeriveCSFlags, orgDeriveCSFlags)(entitlements, restricted, restrictedBypass);
-}
-
-// OSX 10.15
-static bool patchedProcessEntitlements(OSDictionary *entitlements, uint32_t *flags, bool *restricted, bool *restrictedBypass, void *path, char **err, size_t *err_len) {
-    applyExemptions(entitlements);
-    return FunctionCast(patchedProcessEntitlements, orgProcessEntitlements)(entitlements, flags, restricted, restrictedBypass, path, err, err_len);
-}
-
-static KernelPatcher::RouteRequest requests[] {
-    KernelPatcher::RouteRequest("__Z28deriveCSFlagsForEntitlementsP12OSDictionaryPbS1_", patchedDeriveCSFlags, orgDeriveCSFlags),
-    KernelPatcher::RouteRequest("__Z19processEntitlementsP12OSDictionaryPjPbS2_P8LazyPathPPcPm", patchedProcessEntitlements, orgProcessEntitlements),
-};
-
-static void processKext(void *user, KernelPatcher &patcher, size_t index, mach_vm_address_t address, size_t size) {
-    DBGLOG(MODULE_SHORT, "processing AMFIExemption patches");
-    for (size_t i = 0; i < arrsize(kextAMFIExtension); i++) {
-        if (kextAMFIExtension[i].loadIndex == index) {
-            if (patcher.routeMultiple(index, requests, address, size, true, true)) {
-                DBGLOG(MODULE_SHORT, "patched deriveCSFlagsForEntitlements");
-            } else {
-                SYSLOG(MODULE_SHORT, "failed to find deriveCSFlagsForEntitlements in loaded kext: %d", patcher.getError());
-            }
-        }
-    }
+static void patched_csblob_entitlements_dictionary_set(void *csblob, void *entitlements) {
+    applyExemptions((OSDictionary *)entitlements);
+    FunctionCast(patched_csblob_entitlements_dictionary_set, origDictionarySet)(csblob, entitlements);
 }
 
 // main function
 static void pluginStart() {
     LiluAPI::Error error;
     DBGLOG(MODULE_SHORT, "start");
-    error = lilu.onKextLoad(kextAMFIExtension, arrsize(kextAMFIExtension), processKext, nullptr);
+    error = lilu.onPatcherLoad([](void *user, KernelPatcher &patcher){
+        DBGLOG(MODULE_SHORT, "patching csblob_entitlements_dictionary_set");
+        mach_vm_address_t kern = patcher.solveSymbol(KernelPatcher::KernelID, "_csblob_entitlements_dictionary_set");
+        
+        if (patcher.getError() == KernelPatcher::Error::NoError) {
+            origDictionarySet = patcher.routeFunctionLong(kern, reinterpret_cast<mach_vm_address_t>(patched_csblob_entitlements_dictionary_set), true, true);
+            
+            if (patcher.getError() != KernelPatcher::Error::NoError) {
+                SYSLOG(MODULE_SHORT, "failed to hook _csblob_entitlements_dictionary_set");
+            } else {
+                DBGLOG(MODULE_SHORT, "hooked _csblob_entitlements_dictionary_set");
+            }
+        } else {
+            SYSLOG(MODULE_SHORT, "failed to find _csblob_entitlements_dictionary_set");
+        }
+    });
     if (error != LiluAPI::Error::NoError) {
         SYSLOG(MODULE_SHORT, "failed to register onKextLoad method: %d", error);
     }
@@ -161,6 +142,6 @@ PluginConfiguration ADDPR(config) {
     bootargBeta,
     arrsize(bootargBeta),
     KernelVersion::Mojave,
-    KernelVersion::Catalina,
+    KernelVersion::BigSur,
     pluginStart
 };
