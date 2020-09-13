@@ -24,6 +24,11 @@ To add an entitlement exemption, open `Info.plist` in your favourite plist edito
 
 Note that having an entitlement in the exemption list does *not* mean that entitlement is granted to all apps. Your app must still be code-signed with the requested entitlement. This KEXT only disables the requirement that most entitlements require an Apple CA anchor. You can either self-sign with your own certificate or ad-hoc sign with no certificate and still use the entitlement.
 
+## Default Exemptions
+
+* CoreGraphics debugging (normally only granted to Quartz Debug app) for setting debug options for WindowServer
+* DriverKit and System Extension installation (normally granted to approved developers who pay $99/year)
+
 ## Security
 
 It is highly recommended that this KEXT is loaded by OpenCore with the vault feature enabled. This would prevent malware from modifying `Info.plist` and granting itself arbitrary entitlements which defeats SIP+AMFI security.

@@ -35,6 +35,8 @@
 			<key>Exemptions</key>
 			<array>
 				<string>com.apple.private.CoreGraphics.debugging</string>
+				<string>com.apple.developer.system-extension.*</string>
+				<string>com.apple.developer.driverkit*</string>
 			</array>
 		</dict>
 	</dict>
